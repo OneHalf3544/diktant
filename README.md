@@ -47,14 +47,14 @@ python diktant.py text.txt -o d.wav --duration 270s       # 270 секунд
 
 ```powershell
 # Посмотреть разбивку и тайминг, ничего не синтезируя
-python diktant.py "examples/Упражнение 86.txt" --dry-run --wpm 20
+python diktant.py "examples/Exercise-86.txt" --dry-run --wpm 20
 
 # Офлайн-синтез голосом Windows (без ключей, качество — какое есть)
-python diktant.py example.txt -o diktant.wav --backend sapi --wpm 20
+python diktant.py examples/Exercise-86.txt -o diktant.wav --backend sapi --wpm 20
 
 # Yandex SpeechKit — хорошее качество русской речи
 $env:YANDEX_API_KEY = "AQVN..."
-python diktant.py example.txt -o diktant.wav --wpm 20 --voice alena
+python diktant.py examples/Exercise-86.txt -o diktant.wav --wpm 20 --voice alena
 ```
 
 ## Движки синтеза
