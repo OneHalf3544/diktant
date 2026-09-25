@@ -2,3 +2,4 @@
 /.claude
 /__pycache__
 /api-key.txt
+.DS_Store
