@@ -21,9 +21,9 @@
 `--duration`, темп посчитается автоматически из числа слов в тексте:
 
 ```powershell
-python diktant.py text.txt -o d.wav --duration 4m       # 4 минуты
-python diktant.py text.txt -o d.wav --duration 4:30      # 4 мин 30 с
-python diktant.py text.txt -o d.wav --duration 270s       # 270 секунд
+python diktant.py text.txt --duration 4m        # 4 минуты
+python diktant.py text.txt --duration 4:30      # 4 мин 30 с
+python diktant.py text.txt --duration 270s      # 270 секунд
 ```
 
 Пауза после отрезка пропорциональна числу слов в нём, плюс добавка на знак
@@ -50,11 +50,12 @@ python diktant.py text.txt -o d.wav --duration 270s       # 270 секунд
 python diktant.py "examples/Exercise-86.txt" --dry-run --wpm 20
 
 # Офлайн-синтез голосом Windows (без ключей, качество — какое есть)
-python diktant.py examples/Exercise-86.txt -o diktant.wav --backend sapi --wpm 20
+python diktant.py examples/Exercise-86.txt --backend sapi --wpm 20
 
 # Yandex SpeechKit — хорошее качество русской речи
 $env:YANDEX_API_KEY = "AQVN..."
-python diktant.py examples/Exercise-86.txt -o diktant.wav --wpm 20 --voice alena
+python diktant.py examples/Exercise-86.txt --wpm 20 --voice alena
+# -> examples/Exercise-86-20-wpm.mp3
 ```
 
 ## Движки синтеза
@@ -74,10 +75,13 @@ python diktant.py examples/Exercise-86.txt -o diktant.wav --wpm 20 --voice alena
 
 | Флаг | По умолчанию | Что делает |
 |---|---|---|
+| `-o` / `--output` | имя из входного файла | выходной файл `.wav` или `.mp3` |
+| `--format` | `mp3` | расширение автоимени, когда `-o` не задан |
+| `--mp3-bitrate` | `128k` | битрейт при записи в `.mp3` |
 | `--wpm` | 55 | целевой темп диктанта, слов в минуту |
 | `--duration` | — | вместо `--wpm`: уложить весь диктант в заданное время (4, 4m, 4:30, 270s) |
 | `--speed` | 1.0 | скорость речи диктора (0.5–2.0) |
-| `--max-words` / `--min-words` | 9 / 3 | границы длины отрезка для чтения |
+| `--max-words` / `--min-words` | 5 / 2 | границы длины отрезка для чтения |
 | `--repeat` | 1 | сколько раз читать каждый отрезок |
 | `--repeat-gap` | 0.8 | пауза между повторами отрезка, с |
 | `--min-pause` | 1.0 | минимальная пауза после отрезка, с |
@@ -85,24 +89,37 @@ python diktant.py examples/Exercise-86.txt -o diktant.wav --wpm 20 --voice alena
 | `--clause-extra` | 0.4 | добавка к паузе после запятой/тире/двоеточия внутри предложения, с |
 | `--recap` / `--no-recap` | вкл. | фраза целиком перед надиктовкой по частям |
 | `--recap-pre-pause` | 1.5 | пауза после рекапа, перед началом надиктовки, с |
-| `--recap-gap` | 0.2 | зазор между кусками при склейке рекапа, с |
 | `--full-read` | none | сплошное чтение текста `before` / `after` / `both` |
+| `--full-read-pause` | 4.0 | пауза вокруг сплошного чтения, с |
 | `--lead-in` / `--tail` | 1.0 / 3.0 | тишина в начале и в конце файла, с |
+| `--no-trim` | — | не срезать тишину по краям синтезированных отрезков |
 | `--cache-dir` | `.tts_cache` | кэш синтеза (не платить за повторные прогоны) |
 | `--dry-run` | — | показать план без синтеза |
+| `--script` | — | вывести подробный TTS-скрипт: текст и паузы по порядку воспроизведения |
 
 Классический школьный сценарий — прочитать текст целиком, потом диктовать
 по частям с повторами:
 
 ```powershell
-python diktant.py text.txt -o diktant.wav --wpm 45 --repeat 2 --full-read before
+python diktant.py text.txt --wpm 45 --repeat 2 --full-read before
 ```
+
+## Имя выходного файла
+
+Без `-o` файл кладётся рядом с исходным текстом, а к имени приписывается
+темп или длительность: `Exercise-100.txt` → `Exercise-100-20-wpm.mp3`, а с
+`--duration 4:30` → `Exercise-100-4m30s.mp3`. Расширение автоимени задаёт
+`--format`. Для текста из stdin (`-`) автоимя не вывести — нужен явный `-o`.
 
 ## Формат вывода
 
-По умолчанию `.wav` (48 кГц, 16 бит, моно) — пишется напрямую, ничего
-устанавливать не нужно. Если указать `.mp3`, потребуется `ffmpeg` в `PATH`
-(`winget install Gyan.FFmpeg`).
+По умолчанию `.mp3` (`--format wav` — записать `.wav`). Для `.mp3` нужен
+`ffmpeg` в `PATH` (`winget install Gyan.FFmpeg`); если его нет, автоимя
+получает расширение `.wav`. Явно указанный `-o ... .mp3` без ffmpeg —
+ошибка.
+
+`.wav` — 48 кГц, 16 бит, моно, пишется напрямую; расширение выходного файла
+решает, в каком формате сохранять, независимо от `--format`.
 
 ## Кэш
 
