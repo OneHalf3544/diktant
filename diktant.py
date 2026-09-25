@@ -450,12 +450,26 @@ def write_wav(path: Path, pcm: bytes) -> None:
         wf.writeframes(pcm)
 
 
+def _ffmpeg_install_hint() -> str:
+    if sys.platform == "win32":
+        cmd = ("winget install Gyan.FFmpeg   "
+               "(или choco install ffmpeg, или scoop install ffmpeg)")
+    elif sys.platform == "darwin":
+        cmd = "brew install ffmpeg"
+    else:
+        cmd = ("sudo apt install ffmpeg   (Debian/Ubuntu; в других "
+               "дистрибутивах — dnf/pacman install ffmpeg)")
+    return f"Установить ffmpeg:\n  {cmd}"
+
+
+FFMPEG_INSTALL_HINT = _ffmpeg_install_hint()
+
+
 def encode_mp3(wav_path: Path, mp3_path: Path, bitrate: str = "128k") -> None:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise SynthError(
-            "Для .mp3 нужен ffmpeg в PATH. Либо сохраните в .wav, "
-            "либо установите ffmpeg (winget install Gyan.FFmpeg)."
+            f"Для .mp3 нужен ffmpeg в PATH. Либо сохраните в .wav.\n{FFMPEG_INSTALL_HINT}"
         )
     subprocess.run(
         [ffmpeg, "-y", "-loglevel", "error", "-i", str(wav_path),
@@ -592,12 +606,13 @@ def duration_tag(seconds: float) -> str:
     return f"{h}h{m:02d}m{s:02d}s" if h else f"{m}m{s:02d}s"
 
 
-def default_output_path(input_path: str, *, wpm: float, duration_sec: float | None) -> Path:
+def default_output_path(input_path: str, *, wpm: float, duration_sec: float | None,
+                        ext: str = "mp3") -> Path:
     """Имя выходного файла по умолчанию: рядом с текстом, с припиской темпа
-    или длительности — например, Exercise-100.txt -> Exercise-100-20-wpm.wav."""
+    или длительности — например, Exercise-100.txt -> Exercise-100-20-wpm.mp3."""
     src = Path(input_path)
     tag = duration_tag(duration_sec) if duration_sec is not None else wpm_tag(wpm)
-    return src.with_name(f"{src.stem}-{tag}.wav")
+    return src.with_name(f"{src.stem}-{tag}.{ext}")
 
 
 def parse_duration(spec: str) -> float:
@@ -684,9 +699,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("input", nargs="?", help="файл с текстом (UTF-8); '-' — читать stdin")
     p.add_argument("-o", "--output",
-                   help="выходной файл .wav (или .mp3, если есть ffmpeg); "
+                   help="выходной файл .wav или .mp3 (для .mp3 нужен ffmpeg); "
                         "если не задан, берётся путь входного файла с припиской "
-                        "темпа/длительности, напр. Exercise-100-20-wpm.wav")
+                        "темпа/длительности и расширением по --format, напр. "
+                        "Exercise-100-20-wpm.mp3")
+    p.add_argument("--format", choices=["mp3", "wav"], default="mp3",
+                   help="расширение автогенерируемого имени файла, когда -o не "
+                        "задан (по умолчанию mp3; при отсутствии ffmpeg "
+                        "автоматически используется wav)")
     p.add_argument("--wpm", type=float, default=None,
                    help="целевой темп диктанта, слов в минуту (по умолчанию 55, "
                         "если не задан --duration)")
@@ -802,8 +822,14 @@ def main(argv: list[str] | None = None) -> int:
         wpm = args.wpm if args.wpm is not None else 55.0
 
     if not args.output and args.input != "-":
+        fmt = args.format
+        if fmt == "mp3" and not shutil.which("ffmpeg"):
+            print("ffmpeg не найден в PATH — автоимя файла будет с "
+                  f"расширением .wav вместо .mp3.\n{FFMPEG_INSTALL_HINT}",
+                  file=sys.stderr)
+            fmt = "wav"
         args.output = str(default_output_path(
-            args.input, wpm=wpm, duration_sec=duration_sec,
+            args.input, wpm=wpm, duration_sec=duration_sec, ext=fmt,
         ))
 
     # Предложения из 2+ отрезков получают рекап — фразу целиком перед
