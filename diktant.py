@@ -578,6 +578,28 @@ def fmt_time(seconds: float) -> str:
     return f"{total // 60}:{total % 60:02d}"
 
 
+def wpm_tag(wpm: float) -> str:
+    """Ярлык темпа для имени файла: 20 -> '20-wpm', 17.5 -> '17.5-wpm'."""
+    value = f"{wpm:g}"
+    return f"{value}-wpm"
+
+
+def duration_tag(seconds: float) -> str:
+    """Ярлык длительности для имени файла (без ':' — недопустим в Windows)."""
+    total = int(round(seconds))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}h{m:02d}m{s:02d}s" if h else f"{m}m{s:02d}s"
+
+
+def default_output_path(input_path: str, *, wpm: float, duration_sec: float | None) -> Path:
+    """Имя выходного файла по умолчанию: рядом с текстом, с припиской темпа
+    или длительности — например, Exercise-100.txt -> Exercise-100-20-wpm.wav."""
+    src = Path(input_path)
+    tag = duration_tag(duration_sec) if duration_sec is not None else wpm_tag(wpm)
+    return src.with_name(f"{src.stem}-{tag}.wav")
+
+
 def parse_duration(spec: str) -> float:
     """Разбирает желаемую длительность в секунды.
 
@@ -628,13 +650,24 @@ def print_tts_script(plan: Plan) -> None:
 # ===========================================================================
 
 
+API_KEY_FILE = Path(__file__).resolve().parent / "api-key.txt"
+
+
+def read_api_key_file() -> str | None:
+    try:
+        return API_KEY_FILE.read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
 def build_backend(args) -> Backend:
     if args.backend == "yandex":
-        key = args.api_key or os.environ.get("YANDEX_API_KEY")
+        key = args.api_key or os.environ.get("YANDEX_API_KEY") or read_api_key_file()
         if not key:
             raise SynthError(
-                "Не задан ключ Yandex SpeechKit. Передайте --api-key или "
-                "установите переменную окружения YANDEX_API_KEY "
+                "Не задан ключ Yandex SpeechKit. Передайте --api-key, "
+                "установите переменную окружения YANDEX_API_KEY, либо "
+                f"положите ключ в файл {API_KEY_FILE.name} рядом со скриптом "
                 "(либо используйте --backend sapi для офлайн-синтеза)."
             )
         return YandexBackend(
@@ -650,7 +683,10 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("input", nargs="?", help="файл с текстом (UTF-8); '-' — читать stdin")
-    p.add_argument("-o", "--output", help="выходной файл .wav (или .mp3, если есть ffmpeg)")
+    p.add_argument("-o", "--output",
+                   help="выходной файл .wav (или .mp3, если есть ffmpeg); "
+                        "если не задан, берётся путь входного файла с припиской "
+                        "темпа/длительности, напр. Exercise-100-20-wpm.wav")
     p.add_argument("--wpm", type=float, default=None,
                    help="целевой темп диктанта, слов в минуту (по умолчанию 55, "
                         "если не задан --duration)")
@@ -663,7 +699,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p.add_argument("--backend", choices=["yandex", "sapi"], default="yandex",
                    help="движок синтеза (по умолчанию yandex)")
-    p.add_argument("--api-key", help="Api-Key Yandex Cloud (иначе берётся YANDEX_API_KEY)")
+    p.add_argument("--api-key",
+                   help="Api-Key Yandex Cloud (иначе берётся YANDEX_API_KEY, "
+                        "иначе — содержимое api-key.txt рядом со скриптом)")
     p.add_argument("--folder-id", help="folderId Yandex Cloud (обычно не нужен для Api-Key)")
     p.add_argument("--voice", help="голос: yandex — alena/filipp/…; sapi — имя голоса Windows")
     p.add_argument("--role", help="амплуа голоса Yandex (neutral, good, friendly…)")
@@ -733,8 +771,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.input:
         p.error("не указан входной файл с текстом")
-    if not args.dry_run and not args.output:
-        p.error("не указан выходной файл (-o), либо используйте --dry-run")
+    if not args.dry_run and not args.output and args.input == "-":
+        p.error("для текста из stdin имя выходного файла не вывести автоматически — "
+                "укажите -o явно")
     if args.wpm is not None and args.duration is not None:
         p.error("нельзя одновременно указывать --wpm и --duration")
     duration_sec = None
@@ -761,6 +800,11 @@ def main(argv: list[str] | None = None) -> int:
         wpm = words_total / (duration_sec / 60)
     else:
         wpm = args.wpm if args.wpm is not None else 55.0
+
+    if not args.output and args.input != "-":
+        args.output = str(default_output_path(
+            args.input, wpm=wpm, duration_sec=duration_sec,
+        ))
 
     # Предложения из 2+ отрезков получают рекап — фразу целиком перед
     # надиктовкой по частям. Она озвучивается ОДНИМ вызовом TTS по полному
