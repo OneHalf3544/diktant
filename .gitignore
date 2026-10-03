@@ -3,3 +3,7 @@
 /__pycache__
 /api-key.txt
 .DS_Store
+
+# Не грузим результат генерации в github:
+/examples/Exercise-*.mp3
+/examples/Exercise-*.wav
