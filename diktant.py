@@ -49,8 +49,9 @@ SAMPLE_WIDTH = 2
 CHANNELS = 1
 BYTES_PER_SEC = SAMPLE_RATE * SAMPLE_WIDTH * CHANNELS
 
-# Пауза после озвученного заголовка, перед началом диктанта, с.
-HEADER_PAUSE = 2.0
+# Пауза после озвученного заголовка, перед началом диктанта, с. Заменяет
+# вступительную тишину диктанта (--lead-in), а не добавляется к ней.
+HEADER_PAUSE = 1.5
 
 
 # ===========================================================================
@@ -754,7 +755,6 @@ def print_tts_script(plan: Plan, header: str | None = None) -> None:
         n += 1
         print(f"{n:>3}. TTS (заголовок)  «{header}»")
         print(f"     [тишина {HEADER_PAUSE:.1f} с]")
-        print(f"     [тишина {plan.lead_in:.1f} с]")
     for seg in plan.segments:
         if seg.recap:
             n += 1
@@ -839,7 +839,7 @@ def produce_variant(args, segments: list[Segment], text: str, meta: dict[str, st
 
     if args.dry_run:
         header_sec = estimate_speech_sec(header, args.speed)
-        print(f"С заголовком:    {fmt_time(args.lead_in + header_sec + HEADER_PAUSE + plan.total)}")
+        print(f"С заголовком:    {fmt_time(header_sec + HEADER_PAUSE + plan.total)}")
         return None
 
     # --- сборка ------------------------------------------------------------
@@ -860,11 +860,14 @@ def produce_variant(args, segments: list[Segment], text: str, meta: dict[str, st
             pcm = pcm + full + silence(args.tail)
         print(f"Со сплошным чтением: {fmt_time(duration_of(pcm))}")
 
-    # Заголовок — самым первым и вне бюджета темпа, без повторов.
+    # Заголовок — самым первым и вне бюджета темпа, без повторов. Встаёт
+    # сразу после вступительной тишины: собранное аудио всегда начинается
+    # с silence(lead_in), и пауза после заголовка её не дублирует.
     header_pcm = cache.get(header, args.speed)
     if not args.no_trim:
         header_pcm = trim_silence(header_pcm)
-    pcm = silence(args.lead_in) + header_pcm + silence(HEADER_PAUSE) + pcm
+    lead = len(silence(args.lead_in))
+    pcm = pcm[:lead] + header_pcm + silence(HEADER_PAUSE) + pcm[lead:]
     print(f"С заголовком:    {fmt_time(duration_of(pcm))}")
 
     out = Path(output)
