@@ -49,6 +49,104 @@ SAMPLE_WIDTH = 2
 CHANNELS = 1
 BYTES_PER_SEC = SAMPLE_RATE * SAMPLE_WIDTH * CHANNELS
 
+# Пауза после озвученного заголовка, перед началом диктанта, с.
+HEADER_PAUSE = 2.0
+
+
+# ===========================================================================
+# Шапка текста и заголовок диктанта
+# ===========================================================================
+
+# Синонимы ключей шапки -> каноническое имя.
+FRONT_MATTER_KEYS = {
+    "название": "title", "title": "title",
+    "автор": "author", "author": "author",
+}
+
+
+def parse_front_matter(raw: str) -> tuple[dict[str, str], str]:
+    """Отделяет необязательную шапку в начале файла:
+
+        ---
+        Название: ...
+        Автор: ...
+        ---
+        Текст диктанта...
+
+    Возвращает (метаданные, остаток текста). Ключи title/author приводятся
+    к каноническим именам, прочие сохраняются как есть. Без шапки (или без
+    закрывающего '---') — ({}, raw)."""
+    lines = raw.lstrip("﻿").splitlines()
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    if i >= len(lines) or lines[i].strip() != "---":
+        return {}, raw
+    meta: dict[str, str] = {}
+    for j in range(i + 1, len(lines)):
+        line = lines[j].strip()
+        if line == "---":
+            return meta, "\n".join(lines[j + 1:])
+        if ":" in line:
+            key, value = line.split(":", 1)
+            key, value = key.strip(), value.strip()
+            if value:  # пустое значение — как будто ключа нет
+                meta[FRONT_MATTER_KEYS.get(key.lower(), key)] = value
+    return {}, raw
+
+
+def title_from_filename(stem: str) -> str:
+    """Название по имени файла: Exercise-100 -> «Упражнение 100»."""
+    title = re.sub(r"[-_]+", " ", stem).strip()
+    return re.sub(r"^exercise\b", "Упражнение", title, flags=re.IGNORECASE)
+
+
+def plural_ru(n: float, one: str, few: str, many: str) -> str:
+    """Склонение по числу: 1 слово, 2 слова, 5 слов; дробное — «слова»."""
+    if n != int(n):
+        return few
+    n = abs(int(n))
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return few
+    return many
+
+
+def spoken_duration(seconds: float) -> str:
+    """270 -> «4 минуты 30 секунд»."""
+    total = int(round(seconds))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    parts = []
+    if h:
+        parts.append(f"{h} {plural_ru(h, 'час', 'часа', 'часов')}")
+    if m:
+        parts.append(f"{m} {plural_ru(m, 'минута', 'минуты', 'минут')}")
+    if s or not parts:
+        parts.append(f"{s} {plural_ru(s, 'секунда', 'секунды', 'секунд')}")
+    return " ".join(parts)
+
+
+def _sentence(text: str) -> str:
+    text = text.strip()
+    return text if text.endswith((".", "!", "?", "…")) else f"{text}."
+
+
+def header_text(title: str | None, author: str | None, words: int, wpm: float,
+                duration_sec: float | None) -> str:
+    """Текст озвучиваемого заголовка: название, автор, число слов в диктанте,
+    темп (или длительность)."""
+    parts = [_sentence(x) for x in (title, author) if x]
+    # «из 1 слова / 21 слова», но «из 2, 5, 175 слов» — родительный падеж.
+    parts.append(f"Диктант из {words} {plural_ru(words, 'слова', 'слов', 'слов')}.")
+    if duration_sec is not None:
+        parts.append(f"Длительность {spoken_duration(duration_sec)}.")
+    else:
+        value = f"{wpm:g}".replace(".", ",")
+        parts.append(f"Темп {value} {plural_ru(wpm, 'слово', 'слова', 'слов')} в минуту.")
+    return " ".join(parts)
+
 
 # ===========================================================================
 # Разбор текста на смысловые отрезки
@@ -465,15 +563,22 @@ def _ffmpeg_install_hint() -> str:
 FFMPEG_INSTALL_HINT = _ffmpeg_install_hint()
 
 
-def encode_mp3(wav_path: Path, mp3_path: Path, bitrate: str = "128k") -> None:
+def encode_mp3(wav_path: Path, mp3_path: Path, bitrate: str = "128k",
+               tags: dict[str, str] | None = None) -> None:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise SynthError(
             f"Для .mp3 нужен ffmpeg в PATH. Либо сохраните в .wav.\n{FFMPEG_INSTALL_HINT}"
         )
+    metadata: list[str] = []
+    for key, value in (tags or {}).items():
+        if value:
+            metadata += ["-metadata", f"{key}={value}"]
+    # ID3v2.3 — чтобы кириллицу в тегах видел и проводник Windows.
     subprocess.run(
         [ffmpeg, "-y", "-loglevel", "error", "-i", str(wav_path),
-         "-codec:a", "libmp3lame", "-b:a", bitrate, str(mp3_path)],
+         "-codec:a", "libmp3lame", "-b:a", bitrate,
+         *metadata, "-id3v2_version", "3", str(mp3_path)],
         check=True,
     )
 
@@ -640,11 +745,16 @@ def parse_duration(spec: str) -> float:
                      f"Форматы: 4, 4m, 240s, 4:30, 1:02:30.")
 
 
-def print_tts_script(plan: Plan) -> None:
+def print_tts_script(plan: Plan, header: str | None = None) -> None:
     """Построчно печатает точную последовательность вызовов TTS и пауз —
     именно то, что реально попадёт в аудио, в порядке воспроизведения."""
     n = 0
     print(f"     [тишина {plan.lead_in:.1f} с]")
+    if header:
+        n += 1
+        print(f"{n:>3}. TTS (заголовок)  «{header}»")
+        print(f"     [тишина {HEADER_PAUSE:.1f} с]")
+        print(f"     [тишина {plan.lead_in:.1f} с]")
     for seg in plan.segments:
         if seg.recap:
             n += 1
@@ -658,6 +768,133 @@ def print_tts_script(plan: Plan) -> None:
                 print(f"     [тишина {plan.repeat_gap:.1f} с]")
         print(f"     [тишина {seg.pause_sec:.1f} с]")
     print(f"     [тишина {plan.tail:.1f} с]")
+
+
+def parse_wpm_list(spec: str) -> list[float]:
+    """Разбирает --wpm: одно значение или список через запятую ("15,20,25")."""
+    values = []
+    for item in spec.split(","):
+        item = item.strip()
+        try:
+            value = float(item)
+        except ValueError:
+            raise ValueError(f"Не понимаю темп «{item}» в --wpm. "
+                             f"Формат: 20 или 15,20,25.") from None
+        if value <= 0:
+            raise ValueError(f"Темп должен быть больше нуля: «{item}».")
+        if value not in values:
+            values.append(value)
+    return values
+
+
+def produce_variant(args, segments: list[Segment], text: str, meta: dict[str, str],
+                    *, wpm: float, duration_sec: float | None, output: str | None,
+                    cache: SynthCache | None, show_table: bool) -> Path | None:
+    """Планирует паузы под один темп, печатает отчёт и (без --dry-run)
+    собирает и записывает аудио. Синтез отрезков уже выполнен — он от темпа
+    не зависит, поэтому для набора значений --wpm делается один раз."""
+    plan, warning = plan_pauses(
+        segments, wpm, repeat=args.repeat, repeat_gap=args.repeat_gap,
+        min_pause=args.min_pause, sentence_extra=args.sentence_extra,
+        clause_extra=args.clause_extra, lead_in=args.lead_in, tail=args.tail,
+    )
+    title, author = meta.get("title"), meta.get("author")
+    header = header_text(title, author, plan.words, wpm, duration_sec)
+
+    if args.script:
+        print("=== TTS-скрипт ===")
+        print_tts_script(plan, header)
+        print()
+
+    # --- отчёт -------------------------------------------------------------
+    recap_count = sum(1 for seg in plan.segments if seg.recap)
+    if show_table:
+        width = max(len(str(len(segments))), 2)
+        for i, seg in enumerate(plan.segments, 1):
+            if seg.recap:
+                print(f"{'':>{width}}   ↺ фраза целиком ({seg.recap_speech_sec:.1f} с)"
+                      f" + пауза {seg.recap_pre_pause:.1f} с")
+            mark = "¶" if seg.is_sentence_end else "·"
+            print(f"{i:>{width}} {mark} [{seg.words:>2} сл, речь {seg.speech_sec:4.1f} с, "
+                  f"пауза {seg.pause_sec:4.1f} с] {seg.text}")
+        print()
+
+    print(f"Заголовок:       «{header}»")
+    print(f"Слов:            {plan.words}")
+    print(f"Отрезков:        {len(plan.segments)}"
+          f" (предложений: {plan.segments[-1].sentence_index + 1})")
+    print(f"Речь:            {fmt_time(plan.speech_total)}")
+    print(f"Паузы:           {fmt_time(plan.pause_total)}")
+    if recap_count:
+        print(f"Рекапов фразы:   {recap_count} "
+              f"({fmt_time(plan.recap_pre_total + plan.recap_speech_total)})")
+    print(f"Длительность:    {fmt_time(plan.total)}")
+    if duration_sec is not None:
+        print(f"Темп:            {plan.actual_wpm:.1f} сл/мин "
+              f"(чтобы уложиться в {fmt_time(duration_sec)} → {wpm:.1f} сл/мин)")
+    else:
+        print(f"Темп:            {plan.actual_wpm:.1f} сл/мин (цель {wpm:g})")
+    if warning:
+        print(f"\nВНИМАНИЕ: {warning}", file=sys.stderr)
+
+    if args.dry_run:
+        header_sec = estimate_speech_sec(header, args.speed)
+        print(f"С заголовком:    {fmt_time(args.lead_in + header_sec + HEADER_PAUSE + plan.total)}")
+        return None
+
+    # --- сборка ------------------------------------------------------------
+    pcm = render(plan)
+
+    if args.full_read != "none":
+        full = cache.get(text, args.speed) if len(text) <= 4500 else None
+        if full is None:
+            # Длинный текст — склеиваем сплошное чтение из уже готовых отрезков.
+            gap = silence(0.35)
+            full = gap.join(seg.pcm for seg in plan.segments)
+        elif not args.no_trim:
+            full = trim_silence(full)
+        pad = silence(args.full_read_pause)
+        if args.full_read in ("before", "both"):
+            pcm = silence(args.lead_in) + full + pad + pcm
+        if args.full_read in ("after", "both"):
+            pcm = pcm + full + silence(args.tail)
+        print(f"Со сплошным чтением: {fmt_time(duration_of(pcm))}")
+
+    # Заголовок — самым первым и вне бюджета темпа, без повторов.
+    header_pcm = cache.get(header, args.speed)
+    if not args.no_trim:
+        header_pcm = trim_silence(header_pcm)
+    pcm = silence(args.lead_in) + header_pcm + silence(HEADER_PAUSE) + pcm
+    print(f"С заголовком:    {fmt_time(duration_of(pcm))}")
+
+    out = Path(output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if out.suffix.lower() == ".mp3":
+        tag = duration_tag(duration_sec) if duration_sec is not None else f"{wpm:g} сл/мин"
+        comment = [f"Темп {plan.actual_wpm:.1f} сл/мин", f"слов {plan.words}",
+                   f"длительность {fmt_time(duration_of(pcm))}"]
+        voice = getattr(cache.backend, "voice", None)
+        if voice:
+            comment.append(f"голос {voice}")
+        comment += [f"{k}: {v}" for k, v in meta.items() if k not in ("title", "author")]
+        tags = {
+            "title": f"{title} — {tag}" if title else tag,
+            "album": title or "",
+            "artist": author or "",
+            "genre": "Диктант",
+            "comment": "; ".join(comment),
+        }
+        tmp_wav = out.with_suffix(".tmp.wav")
+        write_wav(tmp_wav, pcm)
+        try:
+            encode_mp3(tmp_wav, out, args.mp3_bitrate, tags)
+        finally:
+            tmp_wav.unlink(missing_ok=True)
+    else:
+        write_wav(out, pcm)
+
+    print(f"\nГотово: {out}  ({fmt_time(duration_of(pcm))})")
+    return out
 
 
 # ===========================================================================
@@ -707,9 +944,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="расширение автогенерируемого имени файла, когда -o не "
                         "задан (по умолчанию mp3; при отсутствии ffmpeg "
                         "автоматически используется wav)")
-    p.add_argument("--wpm", type=float, default=None,
-                   help="целевой темп диктанта, слов в минуту (по умолчанию 55, "
-                        "если не задан --duration)")
+    p.add_argument("--wpm", default=None,
+                   help="целевой темп диктанта, слов в минуту (по умолчанию 20, "
+                        "если не задан --duration); список через запятую "
+                        "(15,20,25) — по файлу на каждое значение")
     p.add_argument("--duration",
                    help="вместо --wpm: уложить весь диктант в заданную "
                         "длительность (4, 4m, 240s, 4:30, 1:02:30) — темп "
@@ -802,10 +1040,22 @@ def main(argv: list[str] | None = None) -> int:
             duration_sec = parse_duration(args.duration)
         except ValueError as exc:
             p.error(str(exc))
+    wpm_values = [20.0]
+    if args.wpm is not None:
+        try:
+            wpm_values = parse_wpm_list(args.wpm)
+        except ValueError as exc:
+            p.error(str(exc))
+    if len(wpm_values) > 1 and args.output:
+        p.error("с несколькими значениями --wpm имя файла выводится "
+                "автоматически — уберите -o")
 
-    text = (sys.stdin.read() if args.input == "-"
-            else Path(args.input).read_text(encoding="utf-8"))
-    text = re.sub(r"\s+", " ", text).strip()
+    raw = (sys.stdin.read() if args.input == "-"
+           else Path(args.input).read_text(encoding="utf-8"))
+    meta, raw = parse_front_matter(raw)
+    if not meta.get("title") and args.input != "-":
+        meta["title"] = title_from_filename(Path(args.input).stem)
+    text = re.sub(r"\s+", " ", raw).strip()
     if not text:
         print("Входной текст пуст.", file=sys.stderr)
         return 1
@@ -817,20 +1067,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if duration_sec is not None:
         words_total = sum(s.words for s in segments)
-        wpm = words_total / (duration_sec / 60)
-    else:
-        wpm = args.wpm if args.wpm is not None else 55.0
+        wpm_values = [words_total / (duration_sec / 60)]
 
+    fmt = args.format
     if not args.output and args.input != "-":
-        fmt = args.format
         if fmt == "mp3" and not shutil.which("ffmpeg"):
             print("ffmpeg не найден в PATH — автоимя файла будет с "
                   f"расширением .wav вместо .mp3.\n{FFMPEG_INSTALL_HINT}",
                   file=sys.stderr)
             fmt = "wav"
-        args.output = str(default_output_path(
-            args.input, wpm=wpm, duration_sec=duration_sec, ext=fmt,
-        ))
 
     # Предложения из 2+ отрезков получают рекап — фразу целиком перед
     # надиктовкой по частям. Она озвучивается ОДНИМ вызовом TTS по полному
@@ -842,6 +1087,7 @@ def main(argv: list[str] | None = None) -> int:
         group[0].recap_pre_pause = args.recap_pre_pause
 
     # --- длительность речи: точно (синтез) или оценкой (dry-run) -----------
+    cache: SynthCache | None = None
     if args.dry_run:
         for seg in segments:
             seg.speech_sec = estimate_speech_sec(seg.text, args.speed)
@@ -878,85 +1124,30 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\rСинтез завершён: {total_calls} вызовов "
               f"(из кэша {cache.hits}, новых {cache.misses}).", file=sys.stderr)
 
-    plan, warning = plan_pauses(
-        segments, wpm, repeat=args.repeat, repeat_gap=args.repeat_gap,
-        min_pause=args.min_pause, sentence_extra=args.sentence_extra,
-        clause_extra=args.clause_extra, lead_in=args.lead_in, tail=args.tail,
-    )
-
-    if args.script:
-        print("=== TTS-скрипт ===")
-        print_tts_script(plan)
-        print()
-
-    # --- отчёт -------------------------------------------------------------
-    width = max(len(str(len(segments))), 2)
-    recap_count = 0
-    for i, seg in enumerate(plan.segments, 1):
-        if seg.recap:
-            recap_count += 1
-            print(f"{'':>{width}}   ↺ фраза целиком ({seg.recap_speech_sec:.1f} с)"
-                  f" + пауза {seg.recap_pre_pause:.1f} с")
-        mark = "¶" if seg.is_sentence_end else "·"
-        print(f"{i:>{width}} {mark} [{seg.words:>2} сл, речь {seg.speech_sec:4.1f} с, "
-              f"пауза {seg.pause_sec:4.1f} с] {seg.text}")
-
-    print()
-    print(f"Слов:            {plan.words}")
-    print(f"Отрезков:        {len(plan.segments)}"
-          f" (предложений: {plan.segments[-1].sentence_index + 1})")
-    print(f"Речь:            {fmt_time(plan.speech_total)}")
-    print(f"Паузы:           {fmt_time(plan.pause_total)}")
-    if recap_count:
-        print(f"Рекапов фразы:   {recap_count} "
-              f"({fmt_time(plan.recap_pre_total + plan.recap_speech_total)})")
-    print(f"Длительность:    {fmt_time(plan.total)}")
-    if duration_sec is not None:
-        print(f"Темп:            {plan.actual_wpm:.1f} сл/мин "
-              f"(чтобы уложиться в {fmt_time(duration_sec)} → {wpm:.1f} сл/мин)")
-    else:
-        print(f"Темп:            {plan.actual_wpm:.1f} сл/мин (цель {wpm:g})")
-    if warning:
-        print(f"\nВНИМАНИЕ: {warning}", file=sys.stderr)
+    outputs: list[Path] = []
+    for n, wpm in enumerate(wpm_values):
+        if len(wpm_values) > 1:
+            print(f"\n=== Темп {wpm:g} сл/мин ===")
+        output = args.output
+        if not output and args.input != "-":
+            output = str(default_output_path(
+                args.input, wpm=wpm, duration_sec=duration_sec, ext=fmt,
+            ))
+        out = produce_variant(
+            args, segments, text, meta, wpm=wpm, duration_sec=duration_sec,
+            output=output, cache=cache, show_table=(n == 0),
+        )
+        if out:
+            outputs.append(out)
 
     if args.dry_run:
         print("\n(--dry-run: длительность речи оценена приблизительно, "
               "синтез не выполнялся)")
-        return 0
-
-    # --- сборка ------------------------------------------------------------
-    pcm = render(plan)
-
-    if args.full_read != "none":
-        full = cache.get(text, args.speed) if len(text) <= 4500 else None
-        if full is None:
-            # Длинный текст — склеиваем сплошное чтение из уже готовых отрезков.
-            gap = silence(0.35)
-            full = gap.join(seg.pcm for seg in plan.segments)
-        elif not args.no_trim:
-            full = trim_silence(full)
-        pad = silence(args.full_read_pause)
-        if args.full_read in ("before", "both"):
-            pcm = silence(args.lead_in) + full + pad + pcm
-        if args.full_read in ("after", "both"):
-            pcm = pcm + full + silence(args.tail)
-        print(f"Со сплошным чтением: {fmt_time(duration_of(pcm))}")
-
-    out = Path(args.output)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    if out.suffix.lower() == ".mp3":
-        tmp_wav = out.with_suffix(".tmp.wav")
-        write_wav(tmp_wav, pcm)
-        try:
-            encode_mp3(tmp_wav, out, args.mp3_bitrate)
-        finally:
-            tmp_wav.unlink(missing_ok=True)
-    else:
-        write_wav(out, pcm)
-
-    print(f"\nГотово: {out}  ({fmt_time(duration_of(pcm))})")
+    elif len(outputs) > 1:
+        print("\nСозданы файлы:")
+        for out in outputs:
+            print(f"  {out}")
     return 0
-
 
 if __name__ == "__main__":
     try:
