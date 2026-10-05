@@ -99,6 +99,10 @@ python diktant.py examples/Exercise-100.txt --wpm 15,20,25
 
 ## Быстрый старт
 
+В репозитории есть примеры текстов в директории `examples`. Это упражнения из [курсов стенографии](https://gzos.ru/%d0%ba%d1%83%d1%80%d1%81%d1%8b/stenografiya-osnovnoj-kurs/), нумерация упражнений соответствует этому курсу.
+
+Примеры запуска скрипта:
+
 ```powershell
 # Посмотреть разбивку и тайминг, ничего не синтезируя
 python diktant.py "examples/Exercise-86.txt" --dry-run --wpm 20
@@ -106,8 +110,8 @@ python diktant.py "examples/Exercise-86.txt" --dry-run --wpm 20
 # Офлайн-синтез голосом Windows (без ключей, качество — какое есть)
 python diktant.py examples/Exercise-86.txt --backend sapi --wpm 20
 
-# Yandex SpeechKit — хорошее качество русской речи
-$env:YANDEX_API_KEY = "AQVN..."
+# Yandex SpeechKit — хорошее качество русской речи (https://aistudio.yandex.ru/).
+# Ключ от API должен быть установлен в env-переменной YANDEX_API_KEY. Либо в директории со скриптом создан файл api-key.txt с этим ключом (.gitignore не добавит его в git).
 python diktant.py examples/Exercise-86.txt --wpm 20 --voice alena
 # -> examples/Exercise-86-20-wpm.mp3
 ```
