@@ -167,6 +167,15 @@ SENTENCE_BOUNDARY = re.compile(r'(?<=[.!?…])["»”\')\]]*\s+')
 # Места, где диктор естественно делает вдох внутри длинного предложения.
 CLAUSE_BOUNDARY = re.compile(r"(?<=[,;:—–])\s+")
 
+# Тире, набранное дефисом: в простом тексте так пишут чаще, чем «—», а вдоха
+# на нём диктор без этого не делает. Внутрисловный дефис («научно-технический»,
+# «чьи-либо») не затрагивается — нужны пробелы с обеих сторон.
+HYPHEN_AS_DASH = re.compile(r"(^|\s)-{1,2}(?=\s)")
+
+
+def normalize_dashes(text: str) -> str:
+    return HYPHEN_AS_DASH.sub(r"\1—", text)
+
 
 def count_words(text: str) -> int:
     return len(WORD_RE.findall(text))
@@ -178,6 +187,7 @@ def _ends_with_abbreviation(chunk: str) -> bool:
 
 
 NUMBERING_RE = re.compile(r"^\(?\d{1,3}[.)]$")  # маркер нумерованного списка: "1.", "12)"
+NUMBERING_PREFIX_RE = re.compile(r"^\(?\d{1,3}[.)]\s*")  # он же в начале отрезка
 # Инициалы: «Б.», «Л.» — одна заглавная буква с точкой в конце уже
 # накопленного куска. Не конец предложения, даже если дальше снова заглавная
 # буква (следующий инициал или фамилия): «Б. Л. Пастернак».
@@ -280,7 +290,10 @@ def build_segments(text: str, max_words: int, min_words: int) -> list[Segment]:
                     sentence_index=si,
                     is_sentence_end=(pi == len(parts) - 1),
                     sentence_text=sentence,
-                    words=count_words(part),
+                    # Номер пункта диктор произносит, но к объёму диктанта
+                    # он не относится: иначе заголовок завышает число слов,
+                    # а бюджет пауз расходуется на номера.
+                    words=count_words(NUMBERING_PREFIX_RE.sub("", part)),
                 )
             )
     return segments
@@ -1058,7 +1071,7 @@ def main(argv: list[str] | None = None) -> int:
     meta, raw = parse_front_matter(raw)
     if not meta.get("title") and args.input != "-":
         meta["title"] = title_from_filename(Path(args.input).stem)
-    text = re.sub(r"\s+", " ", raw).strip()
+    text = normalize_dashes(re.sub(r"\s+", " ", raw).strip())
     if not text:
         print("Входной текст пуст.", file=sys.stderr)
         return 1
